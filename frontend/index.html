@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>Display Webcam Stream</title>
+
+  <style>
+    .container {
+      padding: 8px;
+      margin: 0px 0px;
+      width: 720px;
+      height: 480px;
+      border: 10px #333 solid;
+      display: inline-block;
+    }
+
+    .container2 {
+      padding: 8px;
+      margin: 0px 0px;
+      width: 720px;
+      height: 480px;
+      border: 10px #333 solid;
+      display: none;
+    }
+
+    #canvas1 {
+      padding-top: 35px;
+      padding-bottom: 40px;
+    }
+
+    #videoElement {
+      background-color: #666;
+    }
+
+    #videoElement2 {
+      background-color: #666;
+    }
+
+    .clickbutton {
+      padding-left: 25px;
+      padding-right: 25px;
+    }
+
+    #slider {
+      width: 100%;
+      align-items: center;
+    }
+  </style>
+</head>
+
+<body>
+  <div style="display:inline-block">
+    <div class="container">
+      <video autoplay="true" id="videoElement" width="720" height="480">
+      </video>   
+    </div>
+    <div class="container2">
+      <video autoplay="true" id="videoElement2" width="720" height="480">
+      </video>
+    </div>
+    <!-- <div class="container">
+      <canvas id="canvas1" width="720" height="480"></canvas>
+    </div> -->
+    <div class="container">
+      <img id="canvas1" width="720" height="405" />
+    </div>
+    <div style="padding: 8px;"> 
+      <button class='clickbutton' onclick="OnStart()" >Start</button>
+      <button class='clickbutton' onclick="stop()">Stop</button>
+      <div id="slider">
+        <label>Resolution: </label>
+        <input type="range" min="10" max="100" value="50" class="slider" id="myRange" style="width: 40%;" >
+      </div>
+    </div>
+
+    <h1 id='poseResult'>
+    </h1>
+    <!-- <div class="container">
+      <canvas id="c1" width="720" height="480"></canvas>
+    </div>
+    <div class="container">
+      <canvas id="c2" width="720" height="480"></canvas>
+    </div> -->
+    
+  </div>
+  
+  <script>
+    let startedCam = false;
+    let firstBuffer = null;
+    const timeToCapPkg = 16; //ms
+
+    const frameTime = 25//16.66666;
+    const fasterFrameTime = 24.7//16;
+
+    const config = {
+      width: 1280 * 0.25,
+      height: 720 * 0.25,
+      frameRate: { 
+        ideal: 42, 
+        max: 42
+      }
+    };
+
+    const canvas = document.getElementById("canvas1");
+    //const context = canvas.getContext("2d");
+
+    const poseResultPanel = document.getElementById("poseResult");
+
+    const chunks = []
+    function nextChunk() {
+      if(chunks.length) return chunks.shift();
+      return null;
+    }
+
+    function appendChunk(chunk) {
+      chunks.push(chunk)
+    }
+
+    let arrayOfBlobs = [];
+    setInterval(function() {
+      let next = nextChunk();
+
+      if (!next) return; 
+      
+      arrayOfBlobs.push(next);
+
+      // NEW: Try to flush our queue of video data to the video element
+      appendToSourceBuffer();
+    }, timeToCapPkg);
+
+    let video2 = document.querySelector("#videoElement2");
+    let mediaSource = new MediaSource();
+    let url = URL.createObjectURL(mediaSource);
+    video2.src = url;
+
+    var sourceBuffer = null;
+    
+    mediaSource.addEventListener("sourceopen", function() {
+      sourceBuffer = mediaSource.addSourceBuffer("video/webm; codecs=\"vp8\"");
+      sourceBuffer.mode = 'sequence'
+      //sourceBuffer.addEventListener("updateend", ()=>{console.log("ENDED")});
+    });
+
+    // 5. Use `SourceBuffer.appendBuffer()` to add all of your chunks to the video
+    function appendToSourceBuffer() {
+        if (
+          mediaSource.readyState === "open" &&
+          sourceBuffer &&
+          sourceBuffer.updating === false
+        ) {
+          if(arrayOfBlobs.length == 0) return;
+          let next = arrayOfBlobs.shift();
+          //console.log("appendToSourceBuffer")
+          sourceBuffer.appendBuffer(next);
+        }
+
+        // Limit the total buffer size to 20 minutes
+        // This way we don't run out of RAM
+        if (
+          video2.buffered.length &&
+          video2.buffered.end(0) - video2.buffered.start(0) > 1200
+        ) {
+          //console.log("remove")
+          sourceBuffer.remove(0, video2.buffered.end(0) - 1200)
+        }
+    }
+
+
+    const textEncoder = new TextEncoder();
+    const textDecoder = new TextDecoder();
+
+    let ws = new WebSocket("wss://192.168.1.4:8000")
+    ws.binaryType = "arraybuffer"
+
+    ws.onopen = function() {         
+      // Web Socket is connected, send data using send()
+      ws.send("Hello from client")
+      ws.send(JSON.stringify(config))
+    };
+
+    ws.onclose = function(e) {         
+      console.log(e) 
+      console.log("closed")
+      ws = null
+    };
+
+    ws.onerror = function(sock, e) {
+      console.log(e)     
+      ws = null
+    };
+
+    let buffers = []
+    let bufferMaps = []
+    let poses = []
+    ws.onmessage = function(msg) {
+      //console.log(msg)
+      
+      if (typeof msg.data === 'string' || msg.data instanceof String) {
+        //console.log(data)
+      } else {
+        
+        let data = msg.data
+
+        let arr = new Uint32Array(data.slice(0, 12))
+
+        let sum = 12
+
+        buffers = buffers.concat(data.slice(sum, sum + arr[0]))
+        sum += arr[0]
+
+        bufferMaps = bufferMaps.concat(new Uint32Array(data.slice(sum, sum + arr[1])))
+        sum += arr[1]
+
+        poses = poses.concat(new Float32Array(data.slice(sum, sum + arr[2])))
+        
+      }
+    };
+
+    function Length(vec) {
+      return Math.sqrt(vec[0] * vec[0] + vec[1] * vec[1])
+    }
+
+    function DotProduct(vec1, vec2) {
+      return vec1[0] * vec2[0] + vec1[1] * vec2[1]
+    }
+
+    function AngleBetween(vec1, vec2) {
+      const l1 = Length(vec1)
+      const l2 = Length(vec2)
+      return Math.acos(DotProduct(vec1, vec2) / (l1 * l2))
+    }
+
+    let squatPos = 0;
+    let prevSquatPos = 0;
+    let squatsCount = 0;
+
+    const leftHipId = 6//5//11
+    const leftKneeId = 8//7//13
+    const leftAnkleId = 10//9//15
+    function SquatCounter(humanPose) {
+      const body_11 = [humanPose[leftHipId * 3],    humanPose[leftHipId * 3 + 1]]
+      const body_12 = [humanPose[leftKneeId * 3],   humanPose[leftKneeId * 3 + 1]]
+      const body_13 = [humanPose[leftAnkleId * 3],  humanPose[leftAnkleId * 3 + 1]]
+      const center_11 = [body_11[1] * config.width, body_11[0] * config.height]   //left hip
+      const center_12 = [body_12[1] * config.width, body_12[0] * config.height]   // left knee
+      const center_13 = [body_13[1] * config.width, body_13[0] * config.height]   // left ankle
+
+      const angle = AngleBetween(
+        [center_11[0] - center_12[0], center_11[1] - center_12[1]], 
+        [center_13[0] - center_12[0], center_13[1] - center_12[1]]
+      ) * (180 / Math.PI)
+
+      squatPos = angle <= 80 ? 1 : 0
+      poseResultPanel.innerText = `Góc giữa bàn tay phải, khuỷu tay phải, vai phải: ${Math.floor(angle)} độ`
+      if (prevSquatPos - squatPos == 1) {
+        squatsCount++
+        //console.log(squatsCount)
+        //poseResultPanel.innerText = `Squat counter: ${squatsCount}`
+      }
+          
+      prevSquatPos = squatPos
+    }
+
+    let prevTime = 0
+    let currentTime = 0
+    let deltaTime = 0
+
+    let logCounter = 0
+
+    let frameCounter = 0
+    let sizeCounter = 0
+    let bufferMap = null
+    let buffer = null
+    let pose = null
+    function render() {
+      let frameSize = bufferMap[frameCounter]
+      let frameData = buffer.slice(sizeCounter, sizeCounter + frameSize)
+      let prvPose = frameCounter * 17 * 3
+      let _pose = pose.subarray(prvPose, prvPose + 17 * 3)
+
+      //console.clear()
+      //console.log(frameData)
+
+      /* bufferMap = bufferMap.subarray(1, bufferMap.length - 1)
+      buffer = buffer.subarray(1, buffer.length - 1)
+      pose = pose.subarray(1, buffer.length - 1) */
+      //context.drawImage(srcBlob, 0, 0);
+
+      const blob = new Blob([frameData])
+      const srcBlob = URL.createObjectURL(blob);
+      canvas.src = srcBlob
+
+      //var base64String = btoa(String.fromCharCode.apply(null, new Uint8Array(frameData)));
+      //canvas.src = 'data:image/jpg;base64,'+ base64String;
+
+      /* logCounter++
+      if(logCounter > 60) {
+        console.clear()
+        console.log(_pose)
+        logCounter = 0
+      } */
+
+      SquatCounter(_pose)
+
+      frameCounter++
+      sizeCounter += frameSize
+
+      if (frameCounter == bufferMap.length) {
+        bufferMap = null
+        buffer = null
+        pose = null
+        frameCounter = 0
+        sizeCounter = 0
+
+        setTimeout(getBufferToRender, 0)
+      } else {
+        if (bufferMaps.length != 0) {
+          //have newer buffer, we need render faster
+          setTimeout(render, fasterFrameTime)
+        } else {
+          setTimeout(render, frameTime)
+        }
+        
+      }
+    }
+
+    function getBufferToRender() {
+      if (bufferMaps.length == 0 || bufferMap != null) {
+        setTimeout(getBufferToRender, 0)
+        return
+      }
+
+      bufferMap = bufferMaps.shift();
+
+      buffer = buffers.shift();
+
+      pose = poses.shift();
+
+      //setTimeout(getBufferToRender, 8);
+      //clearInterval(getBufferToRender)
+      //setInterval(render, 8)
+
+      setTimeout(render, 0)
+      
+    }
+
+    //setInterval(getBufferToRender, 8)
+
+    document.addEventListener('DOMContentLoaded', () => {getBufferToRender()})
+
+    function stop() {
+      var video = document.querySelector("#videoElement");
+
+      if (!video.srcObject) return;
+
+      var stream = video.srcObject;
+      var tracks = stream.getTracks();
+
+      for (var i = 0; i < tracks.length; i++) {
+        var track = tracks[i];
+        track.stop();
+      }
+
+      video.srcObject = null;
+      startedCam = false;
+      //firstBuffer = null;
+    }
+
+    function OnStart() {
+      //setTimeout(start, 0)
+      start()
+    }
+
+    function start() {
+      //if(!video2) video2 = document.querySelector("#videoElement2");
+
+      var video = document.querySelector("#videoElement");
+
+      if (video.srcObject) return;
+
+      if (navigator.mediaDevices.getUserMedia) {
+        navigator.mediaDevices.getUserMedia(
+          { 
+            video: { 
+              width: config.width, 
+              height: config.height,
+              frameRate: config.frameRate
+            },
+            audio: false
+          })
+          .then(function (stream) {
+
+            video.srcObject = stream;
+            startedCam = true;
+            //sourceBuffer = mediaSource.addSourceBuffer("video/webm; codecs=\"vp8\"");
+
+            const mediaRecorder = new MediaRecorder(stream);
+            mediaRecorder.addEventListener("dataavailable", function(event) {
+              //console.log(event.data)
+              event.data.arrayBuffer().then((data) => {
+
+                if (firstBuffer == null) {
+                  firstBuffer = data
+                  console.log(data)
+                }
+
+                //else appendChunk(data)
+
+                if (ws) {
+                  //console.log(data)
+                  //let buffer = Uint8Array.from(data)
+
+                  //begin == 0 => normal streaming
+                  //buffer.unshift(0)
+                  ws.send(data)
+                }
+              })
+            });
+
+            mediaRecorder.start();
+
+            const handle = function() {
+              if(mediaRecorder.state === "inactive") return
+              mediaRecorder.requestData()
+            }
+
+            const inv = setInterval(handle, timeToCapPkg)
+
+            mediaRecorder.onstop = () => {
+              clearInterval(inv)
+            }
+
+          })
+          .catch(function (err0r) {
+            console.log("Something went wrong!");
+          });
+      }
+    }
+
+    /* let processor = {
+      fps: 0,
+      counter: 0,
+      time: 0,
+      prevTime: 0,
+      currentTime: 0,
+      deltaTime: 0,
+
+      timerCallback: function() {
+        if (this.video.paused || this.video.ended) {
+          return;
+        }
+        this.computeFrame();
+        let self = this;
+        setTimeout(function () {
+            self.timerCallback();
+          }, 0);
+      },
+    
+      doLoad: function() {
+        this.video = document.getElementById("videoElement2");
+        this.c1 = document.getElementById("c1");
+        this.ctx1 = this.c1.getContext("2d");
+        this.c2 = document.getElementById("c2");
+        this.ctx2 = this.c2.getContext("2d");
+        let self = this;
+        this.width = 720;
+        this.height = 720 * 9 / 16;
+        this.video.addEventListener("play", function() {
+            
+            self.timerCallback();
+          }, false);
+
+        this.prevTime = Date.now();
+        this.currentTime = Date.now();
+      },
+    
+      computeFrame: function() {
+        this.ctx1.drawImage(this.video, 0, 0, this.width, this.height);
+        let frame = this.ctx1.getImageData(0, 0, this.width, this.height);
+        this.ctx2.putImageData(frame, 0, 0);
+
+        
+
+        this.prevTime = this.currentTime;
+        this.currentTime = Date.now();
+        this.deltaTime = this.currentTime - this.prevTime;
+
+        this.time += this.deltaTime;
+
+        this.ctx2.fillText(`${this.fps}`, 10, 30);
+
+        if (this.time > 1000) {
+          this.fps = this.counter;
+          this.counter = 0;
+          this.time = 0;
+        }
+        this.counter++;
+
+        return;
+      }
+    };
+
+    processor.doLoad(); */
+
+    
+  </script>
+</body>
+
+</html>
